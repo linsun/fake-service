@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,7 +82,7 @@ var datadogTracingEndpointHost = env.String("TRACING_DATADOG_HOST", false, "", "
 var datadogTracingEndpointPort = env.String("TRACING_DATADOG_PORT", false, "8126", "Port for Datadog tracing collector")
 var datadogMetricsEndpointHost = env.String("METRICS_DATADOG_HOST", false, "", "Hostname or IP for Datadog metrics collector")
 var datadogMetricsEndpointPort = env.String("METRICS_DATADOG_PORT", false, "8125", "Port for Datadog metrics collector")
-var datadogMetricsEnvironment  = env.String("METRICS_DATADOG_ENVIRONMENT", false, "production", "Environment tag for Datadog metrics collector")
+var datadogMetricsEnvironment = env.String("METRICS_DATADOG_ENVIRONMENT", false, "production", "Environment tag for Datadog metrics collector")
 var logFormat = env.String("LOG_FORMAT", false, "text", "Log file format. [text|json]")
 var logLevel = env.String("LOG_LEVEL", false, "info", "Log level for output. [info|debug|trace|warn|error]")
 var logOutput = env.String("LOG_OUTPUT", false, "stdout", "Location to write log output, default is stdout, e.g. /var/log/web.log")
@@ -87,6 +90,9 @@ var logOutput = env.String("LOG_OUTPUT", false, "stdout", "Location to write log
 // TLS Certs
 var tlsCertificate = env.String("TLS_CERT_LOCATION", false, "", "Location of PEM encoded x.509 certificate for securing server")
 var tlsKey = env.String("TLS_KEY_LOCATION", false, "", "Location of PEM encoded private key for securing server")
+
+// external service url
+var externalServiceURL = env.String("EXTERNAL_SERVICE_URL", false, "http://jsonplaceholder.typicode.com/posts", "External Service URL for updating message content")
 
 var version = "dev"
 
@@ -193,11 +199,14 @@ func main() {
 
 	logger.ServiceStarted(*name, *upstreamURIs, *upstreamWorkers, *listenAddress, *serviceType)
 
+	// Update message by adding response from the external service
+	updatedMessage := fmt.Sprintf("%s + %s", *message, getExternalServiceMessage(*externalServiceURL))
+
 	if *serviceType == "http" {
 
 		rq := handlers.NewRequest(
 			*name,
-			*message,
+			updatedMessage,
 			rd,
 			tidyURIs(*upstreamURIs),
 			*upstreamWorkers,
@@ -297,7 +306,7 @@ func main() {
 
 		fakeServer := handlers.NewFakeServer(
 			*name,
-			*message,
+			updatedMessage,
 			rd,
 			tidyURIs(*upstreamURIs),
 			*upstreamWorkers,
@@ -329,4 +338,36 @@ func tidyURIs(uris string) []string {
 	return resp
 }
 
-// return the ip addresses for this service
+type userdata struct {
+	UserId int    `json:"userId"`
+	Id     int    `json:"id"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+}
+
+// return the external service message
+func getExternalServiceMessage(externalServiceURL string) string {
+	// random generate a number from 1 to 100
+	randomNum := rand.Intn(100-1) + 1
+	path := externalServiceURL + "?id=" + strconv.Itoa(randomNum)
+	var u []userdata
+
+	// connect to external service to get a response.
+	resp, err := http.Get(path)
+	if err != nil {
+		return "Error communicating to the external service: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	decoder := json.NewDecoder(resp.Body)
+	decoder.DisallowUnknownFields()
+	er := decoder.Decode(&u)
+	if er != nil {
+		return "Error communicating to the external service: " + err.Error()
+	}
+	if len(u) > 0 {
+		return "History: " + strconv.Itoa(u[0].Id) + " Title: " + u[0].Title + " Body: " + u[0].Title
+	} else {
+		return "Error communicating to the external service: " + err.Error()
+	}
+}
