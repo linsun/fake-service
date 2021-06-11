@@ -1,15 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -92,7 +89,7 @@ var tlsCertificate = env.String("TLS_CERT_LOCATION", false, "", "Location of PEM
 var tlsKey = env.String("TLS_KEY_LOCATION", false, "", "Location of PEM encoded private key for securing server")
 
 // external service url
-var externalServiceURL = env.String("EXTERNAL_SERVICE_URL", false, "http://jsonplaceholder.typicode.com/posts", "External Service URL for updating message content")
+var externalServiceURL = env.String("EXTERNAL_SERVICE_URL", false, "https://jsonplaceholder.typicode.com/posts", "External Service URL for updating message content")
 
 var version = "dev"
 
@@ -199,14 +196,20 @@ func main() {
 
 	logger.ServiceStarted(*name, *upstreamURIs, *upstreamWorkers, *listenAddress, *serviceType)
 
-	// Update message by adding response from the external service
-	updatedMessage := fmt.Sprintf("%s + %s", *message, getExternalServiceMessage(*externalServiceURL))
+	// check external service connectivity
+	_, err := http.Get(*externalServiceURL)
+	if err != nil {
+		fmt.Println("Unable to connect to the external service: ", err.Error())
+	} else {
+		logger.Log().Info("Able to connect to ", *externalServiceURL)
+	}
 
 	if *serviceType == "http" {
 
 		rq := handlers.NewRequest(
 			*name,
-			updatedMessage,
+			*message,
+			*externalServiceURL,
 			rd,
 			tidyURIs(*upstreamURIs),
 			*upstreamWorkers,
@@ -306,7 +309,7 @@ func main() {
 
 		fakeServer := handlers.NewFakeServer(
 			*name,
-			updatedMessage,
+			*message,
 			rd,
 			tidyURIs(*upstreamURIs),
 			*upstreamWorkers,
@@ -336,38 +339,4 @@ func tidyURIs(uris string) []string {
 	}
 
 	return resp
-}
-
-type userdata struct {
-	UserId int    `json:"userId"`
-	Id     int    `json:"id"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-}
-
-// return the external service message
-func getExternalServiceMessage(externalServiceURL string) string {
-	// random generate a number from 1 to 100
-	randomNum := rand.Intn(100-1) + 1
-	path := externalServiceURL + "?id=" + strconv.Itoa(randomNum)
-	var u []userdata
-
-	// connect to external service to get a response.
-	resp, err := http.Get(path)
-	if err != nil {
-		return "Error communicating to the external service: " + err.Error()
-	}
-	defer resp.Body.Close()
-
-	decoder := json.NewDecoder(resp.Body)
-	decoder.DisallowUnknownFields()
-	er := decoder.Decode(&u)
-	if er != nil {
-		return "Error communicating to the external service: " + err.Error()
-	}
-	if len(u) > 0 {
-		return "History: " + strconv.Itoa(u[0].Id) + " Title: " + u[0].Title + " Body: " + u[0].Title
-	} else {
-		return "Error communicating to the external service: " + err.Error()
-	}
 }

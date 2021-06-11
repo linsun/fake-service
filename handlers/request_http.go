@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,20 +30,21 @@ type Request struct {
 	// name of the service
 	name string
 	// message to return to caller
-	message       string
-	duration      *timing.RequestDuration
-	upstreamURIs  []string
-	workerCount   int
-	defaultClient client.HTTP
-	grpcClients   map[string]client.GRPC
-	errorInjector *errors.Injector
-	loadGenerator *load.Generator
-	log           *logging.Logger
+	message            string
+	externalServiceURL string
+	duration           *timing.RequestDuration
+	upstreamURIs       []string
+	workerCount        int
+	defaultClient      client.HTTP
+	grpcClients        map[string]client.GRPC
+	errorInjector      *errors.Injector
+	loadGenerator      *load.Generator
+	log                *logging.Logger
 }
 
 // NewRequest creates a new request handler
 func NewRequest(
-	name, message string,
+	name, message string, externalServiceURL string,
 	duration *timing.RequestDuration,
 	upstreamURIs []string,
 	workerCount int,
@@ -53,16 +56,17 @@ func NewRequest(
 ) *Request {
 
 	return &Request{
-		name:          name,
-		message:       message,
-		duration:      duration,
-		upstreamURIs:  upstreamURIs,
-		workerCount:   workerCount,
-		defaultClient: defaultClient,
-		grpcClients:   grpcClients,
-		errorInjector: errorInjector,
-		loadGenerator: loadGenerator,
-		log:           log,
+		name:               name,
+		message:            message,
+		externalServiceURL: externalServiceURL,
+		duration:           duration,
+		upstreamURIs:       upstreamURIs,
+		workerCount:        workerCount,
+		defaultClient:      defaultClient,
+		grpcClients:        grpcClients,
+		errorInjector:      errorInjector,
+		loadGenerator:      loadGenerator,
+		log:                log,
 	}
 }
 
@@ -158,12 +162,54 @@ func (rq *Request) Handle(rw http.ResponseWriter, r *http.Request) {
 	resp.EndTime = te.Format(timeFormat)
 	resp.Duration = et.String()
 
+	// Update message by adding response from the external service
+	updatedMessage := fmt.Sprintf("%s + %s", rq.message, getExternalServiceMessage(rq.externalServiceURL))
+
 	// add the response body
 	if strings.HasPrefix(rq.message, "{") {
-		resp.Body = json.RawMessage(rq.message)
+		resp.Body = json.RawMessage(updatedMessage)
 	} else {
-		resp.Body = json.RawMessage(fmt.Sprintf(`"%s"`, rq.message))
+		resp.Body = json.RawMessage(fmt.Sprintf(`"%s"`, updatedMessage))
 	}
 
 	rw.Write([]byte(resp.ToJSON()))
+}
+
+type userdata struct {
+	UserId int    `json:"userId"`
+	Id     int    `json:"id"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+}
+
+// return the external service message
+func getExternalServiceMessage(externalServiceURL string) string {
+	// random generate a number from 1 to 100
+	randomNum := rand.Intn(100-1) + 1
+	path := externalServiceURL + "?id=" + strconv.Itoa(randomNum)
+	var u []userdata
+
+	// connect to external service to get a response.
+	resp, err := http.Get(path)
+	if err != nil {
+		fmt.Println(err)
+		return "Error communicating to the external service: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+
+	if err != nil {
+		return "Error communicating to the external service: " + err.Error()
+	}
+
+	err = json.Unmarshal(body, &u)
+	if err != nil {
+		return "Error communicating to the external service: " + err.Error()
+	}
+	if len(u) > 0 {
+		return "History: " + strconv.Itoa(u[0].Id) + " Title: " + u[0].Title + " Body: " + u[0].Title
+	} else {
+		return "Error communicating to the external service: " + err.Error()
+	}
 }
